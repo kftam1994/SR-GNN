@@ -8,7 +8,9 @@ Created on July, 2018
 
 import networkx as nx
 import numpy as np
-
+from sklearn.model_selection import train_test_split
+from model import trans_to_cuda
+import torch
 
 def build_graph(train_data):
     graph = nx.DiGraph()
@@ -28,37 +30,69 @@ def build_graph(train_data):
                 graph.add_edge(j, i, weight=graph.get_edge_data(j, i)['weight'] / sum)
     return graph
 
+import itertools
+
+def stack_padding(it,row_length):
+    '''
+    https://stackoverflow.com/questions/53051560/stacking-numpy-arrays-of-different-length-using-padding
+    
+    '''
+    def resize(row, size):
+        new = np.array(row)
+        new.resize(size)
+        return new
+
+    mat = np.array( [resize(row, row_length) for row in it], dtype=np.int32 )
+
+    return mat
 
 def data_masks(all_usr_pois, item_tail):
     us_lens = [len(upois) for upois in all_usr_pois]
     len_max = max(us_lens)
-    us_pois = [upois + item_tail * (len_max - le) for upois, le in zip(all_usr_pois, us_lens)]
-    us_msks = [[1] * le + [0] * (len_max - le) for le in us_lens]
+    # us_pois = [upois + item_tail * (len_max - le) for upois, le in zip(all_usr_pois, us_lens)]
+    us_pois = stack_padding(all_usr_pois,len_max)
+    # np.testing.assert_array_equal(us_pois,np.asarray([upois + item_tail * (len_max - le) for upois, le in zip(all_usr_pois, us_lens)]))
+    # us_msks = [[1] * le + [0] * (len_max - le) for le in us_lens]
+    us_msks = ~(us_pois == item_tail[0])*1
+    us_msks = us_msks.astype(np.int8)
+    # np.testing.assert_array_equal(us_msks,np.asarray([[1] * le + [0] * (len_max - le) for le in us_lens]))
     return us_pois, us_msks, len_max
 
 
 def split_validation(train_set, valid_portion):
     train_set_x, train_set_y = train_set
-    n_samples = len(train_set_x)
-    sidx = np.arange(n_samples, dtype='int32')
-    np.random.shuffle(sidx)
-    n_train = int(np.round(n_samples * (1. - valid_portion)))
-    valid_set_x = [train_set_x[s] for s in sidx[n_train:]]
-    valid_set_y = [train_set_y[s] for s in sidx[n_train:]]
-    train_set_x = [train_set_x[s] for s in sidx[:n_train]]
-    train_set_y = [train_set_y[s] for s in sidx[:n_train]]
-
+    # n_samples = len(train_set_x)
+    # sidx = np.arange(n_samples, dtype='int32')
+    # np.random.shuffle(sidx)
+    # n_train = int(np.round(n_samples * (1. - valid_portion)))
+    # valid_set_x = [train_set_x[s] for s in sidx[n_train:]]
+    # valid_set_y = [train_set_y[s] for s in sidx[n_train:]]
+    # train_set_x = [train_set_x[s] for s in sidx[:n_train]]
+    # train_set_y = [train_set_y[s] for s in sidx[:n_train]]
+    
+    train_set_x, valid_set_x, train_set_y, valid_set_y = train_test_split(train_set_x, train_set_y, test_size=valid_portion, random_state=42)
     return (train_set_x, train_set_y), (valid_set_x, valid_set_y)
 
+class ProductData:
+    def __init__(self,product_data):
+        self.product_features_tensor = trans_to_cuda(torch.Tensor(product_data)) # n_nodes x (1+text embedding size*2), 1 is for normalized price
+        
+    def get_shape(self):
+        return self.product_features_tensor.shape
+        
+    def get_product_features(self):
+        return self.product_features_tensor
 
 class Data():
     def __init__(self, data, shuffle=False, graph=None):
         inputs = data[0]
         inputs, mask, len_max = data_masks(inputs, [0])
-        self.inputs = np.asarray(inputs)
-        self.mask = np.asarray(mask)
+        # self.inputs = np.asarray(inputs)
+        self.inputs = inputs
+        # self.mask = np.asarray(mask)
+        self.mask = mask
         self.len_max = len_max
-        self.targets = np.asarray(data[1])
+        self.targets = np.asarray(data[1], dtype=np.int32)
         self.length = len(inputs)
         self.shuffle = shuffle
         self.graph = graph
