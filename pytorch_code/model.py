@@ -54,14 +54,23 @@ class GNN(Module):
 
 
 class SessionGraph(Module):
-    def __init__(self, opt, n_node):
+    def __init__(self, opt, n_node, product_data):
         super(SessionGraph, self).__init__()
         self.hidden_size = opt.hiddenSize
         self.n_node = n_node
         self.batch_size = opt.batchSize
         self.nonhybrid = opt.nonhybrid
         self.embedding = nn.Embedding(self.n_node, self.hidden_size)
-        self.gnn = GNN(self.hidden_size, step=opt.step)
+        self.embedding_hidden_size_requires_grad = self.hidden_size
+
+        assert self.n_node==product_data.get_shape()[0]+1
+        add_embed_size = product_data.get_shape()[1]
+        self.add_node_embedding = nn.Embedding(self.n_node, add_embed_size) # https://discuss.pytorch.org/t/can-we-use-pre-trained-word-embeddings-for-weight-initialization-in-nn-embedding/1222/3
+        self.add_node_embedding.weight = nn.Parameter(torch.concatenate((trans_to_cuda(torch.zeros((1,add_embed_size))),product_data.get_product_features())))
+        self.add_node_embedding.weight.requires_grad = False
+        self.hidden_size += add_embed_size
+        
+        self.gnn = GNN(self.hidden_size,step=opt.step)
         self.linear_one = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
         self.linear_two = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
         self.linear_three = nn.Linear(self.hidden_size, 1, bias=False)
@@ -72,9 +81,11 @@ class SessionGraph(Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        stdv = 1.0 / math.sqrt(self.hidden_size)
+        # stdv = 1.0 / math.sqrt(self.hidden_size)
+        stdv = 1.0 / math.sqrt(self.embedding_hidden_size_requires_grad)
         for weight in self.parameters():
-            weight.data.uniform_(-stdv, stdv)
+            if weight.requires_grad:
+                weight.data.uniform_(-stdv, stdv)
 
     def compute_scores(self, hidden, mask):
         ht = hidden[torch.arange(mask.shape[0]).long(), torch.sum(mask, 1) - 1]  # batch_size x latent_size
@@ -84,12 +95,15 @@ class SessionGraph(Module):
         a = torch.sum(alpha * hidden * mask.view(mask.shape[0], -1, 1).float(), 1)
         if not self.nonhybrid:
             a = self.linear_transform(torch.cat([a, ht], 1))
-        b = self.embedding.weight[1:]  # n_nodes x latent_size
+        # b = self.embedding.weight[1:]  # n_nodes x latent_size
+        b = torch.cat((self.embedding.weight[1:],self.add_node_embedding.weight[1:]),1) # n_nodes x (latent_size+add node embedding size)
         scores = torch.matmul(a, b.transpose(1, 0))
         return scores
 
     def forward(self, inputs, A):
         hidden = self.embedding(inputs)
+        add_hidden = self.add_node_embedding(inputs)
+        hidden = torch.cat((hidden,add_hidden), 2)
         hidden = self.gnn(A, hidden)
         return hidden
 
@@ -112,11 +126,13 @@ def forward(model, i, data):
     alias_inputs, A, items, mask, targets = data.get_slice(i)
     alias_inputs = trans_to_cuda(torch.Tensor(alias_inputs).long())
     items = trans_to_cuda(torch.Tensor(items).long())
-    A = trans_to_cuda(torch.Tensor(A).float())
+    # A = trans_to_cuda(torch.Tensor(A).float())
+    A = trans_to_cuda(torch.from_numpy(np.array(A)).float())
     mask = trans_to_cuda(torch.Tensor(mask).long())
     hidden = model(items, A)
-    get = lambda i: hidden[i][alias_inputs[i]]
-    seq_hidden = torch.stack([get(i) for i in torch.arange(len(alias_inputs)).long()])
+    # get = lambda i: hidden[i][alias_inputs[i]]
+    # seq_hidden = torch.stack([get(i) for i in torch.arange(len(alias_inputs)).long()])
+    seq_hidden = hidden[torch.arange(hidden.shape[0]).unsqueeze(-1), alias_inputs] # https://stackoverflow.com/questions/55628014/indexing-a-3d-tensor-using-a-2d-tensor
     return targets, model.compute_scores(seq_hidden, mask)
 
 
@@ -130,7 +146,7 @@ def train_test(model, train_data, test_data):
         model.optimizer.zero_grad()
         targets, scores = forward(model, i, train_data)
         targets = trans_to_cuda(torch.Tensor(targets).long())
-        loss = model.loss_function(scores, targets - 1)
+        loss = model.loss_function(scores, targets - 1) # because targets, which is item ID, start from 1 to #items but scores is a tensor starting from 0
         loss.backward()
         model.optimizer.step()
         total_loss += loss
