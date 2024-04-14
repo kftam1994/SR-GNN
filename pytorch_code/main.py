@@ -14,7 +14,7 @@ from model import *
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', default='amazonM2', help='dataset name: diginetica/yoochoose1_4/yoochoose1_64/sample/amazonM2')
-parser.add_argument('--batchSize', type=int, default=256, help='input batch size')
+parser.add_argument('--batchSize', type=int, default=128, help='input batch size')
 parser.add_argument('--hiddenSize', type=int, default=100, help='hidden state size')
 parser.add_argument('--epoch', type=int, default=30, help='the number of epochs to train for')
 parser.add_argument('--lr', type=float, default=0.001, help='learning rate')  # [0.001, 0.0005, 0.0001]
@@ -26,16 +26,41 @@ parser.add_argument('--patience', type=int, default=10, help='the number of epoc
 parser.add_argument('--nonhybrid', action='store_true', help='only use the global preference to predict')
 parser.add_argument('--validation', action='store_true', help='validation')
 parser.add_argument('--valid_portion', type=float, default=0.3, help='split the portion of training set as validation set')
+parser.add_argument('--record_wandb', action='store_true', help='whether record training stats in wandb')
 opt = parser.parse_args()
 print(opt)
 
+def record_training_stats(opt,model):
+    import wandb
+    wandb.login()
+    wandb.init(
+        # Set the project where this run will be logged
+        project="SR-GNN_AmazonM2",
+        # Track hyperparameters and run metadata
+        config={
+        "dataset": opt.dataset,
+        "batchSize": opt.batchSize,
+        "hiddenSize": opt.hiddenSize,
+        "epoch":opt.epoch,
+        "lr":opt.lr,
+        "lr_dc":opt.lr_dc,
+        "lr_dc_step": opt.lr_dc_step,
+        "l2": opt.l2,
+        "gnn_propogation_steps": opt.step,
+        "epoch to wait before early stop":opt.patience,
+        "nonhybrid":opt.nonhybrid,
+        "validation":opt.validation,
+        "valid_portion":opt.valid_portion
+        })
+    wandb.watch((model), log='all')
+    return wandb
 
 def main():
     product_data = pickle.load(open('../datasets/' + opt.dataset + '/filtered_products_features.txt', 'rb'))
     product_data = ProductData(product_data)
     train_data = pickle.load(open('../datasets/' + opt.dataset + '/sample_train.txt', 'rb'))
     # print(len(train_data[0]),len(train_data[1]))
-    # train_data = (train_data[0][330000:340000],train_data[1][330000:340000])
+    # train_data = (train_data[0][:1000],train_data[1][:1000])
     if opt.validation:
         train_data, valid_data = split_validation(train_data, opt.valid_portion)
         test_data = valid_data
@@ -58,7 +83,10 @@ def main():
         n_node = 310
 
     model = trans_to_cuda(SessionGraph(opt, n_node, product_data))
-
+    if opt.record_wandb:
+        wandb=record_training_stats(opt,model)
+    else:
+        wandb=None
     start = time.time()
     best_result = [0, 0]
     best_epoch = [0, 0]
@@ -66,7 +94,7 @@ def main():
     for epoch in range(opt.epoch):
         print('-------------------------------------------------------')
         print('epoch: ', epoch)
-        hit, mrr = train_test(model, train_data, test_data)
+        hit, mrr = train_test(model, train_data, test_data, wandb)
         flag = 0
         if hit >= best_result[0]:
             best_result[0] = hit

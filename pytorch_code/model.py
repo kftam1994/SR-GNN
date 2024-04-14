@@ -135,9 +135,7 @@ def forward(model, i, data):
     seq_hidden = hidden[torch.arange(hidden.shape[0]).unsqueeze(-1), alias_inputs] # https://stackoverflow.com/questions/55628014/indexing-a-3d-tensor-using-a-2d-tensor
     return targets, model.compute_scores(seq_hidden, mask)
 
-
-def train_test(model, train_data, test_data):
-    model.scheduler.step()
+def train_test(model, train_data, test_data, wandb=None):
     print('start training: ', datetime.datetime.now())
     model.train()
     total_loss = 0.0
@@ -149,19 +147,29 @@ def train_test(model, train_data, test_data):
         loss = model.loss_function(scores, targets - 1) # because targets, which is item ID, start from 1 to #items but scores is a tensor starting from 0
         loss.backward()
         model.optimizer.step()
+        model.scheduler.step()
+        if wandb is not None:
+            wandb.log({"train_loss_per_batch": loss.item()})
         total_loss += loss
         if j % int(len(slices) / 5 + 1) == 0:
             print('[%d/%d] Loss: %.4f' % (j, len(slices), loss.item()))
     print('\tLoss:\t%.3f' % total_loss)
-
+    print(f'\tAverage Loss per epoch:\t{total_loss/len(slices):.3f}')
+    if wandb is not None:
+        wandb.log({"avg_train_loss_per_epoch": total_loss/len(slices)})
     print('start predicting: ', datetime.datetime.now())
     model.eval()
     hit, mrr = [], []
+    total_valid_loss = 0.0
     slices = test_data.generate_batch(model.batch_size)
     for i in slices:
         targets, scores = forward(model, i, test_data)
+        targets = trans_to_cuda(torch.Tensor(targets).long())
+        valid_loss = model.loss_function(scores, targets - 1) 
+        total_valid_loss += valid_loss
         sub_scores = scores.topk(20)[1]
         sub_scores = trans_to_cpu(sub_scores).detach().numpy()
+        targets = trans_to_cpu(targets).detach().numpy()
         for score, target, mask in zip(sub_scores, targets, test_data.mask):
             hit.append(np.isin(target - 1, score))
             if len(np.where(score == target - 1)[0]) == 0:
@@ -170,4 +178,8 @@ def train_test(model, train_data, test_data):
                 mrr.append(1 / (np.where(score == target - 1)[0][0] + 1))
     hit = np.mean(hit) * 100
     mrr = np.mean(mrr) * 100
+    if wandb is not None:
+        wandb.log({"avg_valid_loss_per_epoch": total_valid_loss/len(slices)})
+        wandb.log({"Recall@20": hit})
+        wandb.log({"MMR@20": mrr})
     return hit, mrr
