@@ -77,7 +77,8 @@ class SessionGraph(Module):
         self.linear_transform = nn.Linear(self.hidden_size * 2, self.hidden_size, bias=True)
         self.loss_function = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.Adam(self.parameters(), lr=opt.lr, weight_decay=opt.l2)
-        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=opt.lr_dc_step, gamma=opt.lr_dc)
+        # self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=opt.lr_dc_step, gamma=opt.lr_dc)
+        self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=opt.lr_dc)
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -135,7 +136,7 @@ def forward(model, i, data):
     seq_hidden = hidden[torch.arange(hidden.shape[0]).unsqueeze(-1), alias_inputs] # https://stackoverflow.com/questions/55628014/indexing-a-3d-tensor-using-a-2d-tensor
     return targets, model.compute_scores(seq_hidden, mask)
 
-def train_test(model, train_data, test_data, wandb=None):
+def train_test(model, train_data, test_data, wandb=None, recall_mrr_k=20):
     print('start training: ', datetime.datetime.now())
     model.train()
     total_loss = 0.0
@@ -147,12 +148,12 @@ def train_test(model, train_data, test_data, wandb=None):
         loss = model.loss_function(scores, targets - 1) # because targets, which is item ID, start from 1 to #items but scores is a tensor starting from 0
         loss.backward()
         model.optimizer.step()
-        model.scheduler.step()
         if wandb is not None:
             wandb.log({"train_loss_per_batch": loss.item()})
         total_loss += loss
         if j % int(len(slices) / 5 + 1) == 0:
             print('[%d/%d] Loss: %.4f' % (j, len(slices), loss.item()))
+    model.scheduler.step()
     print('\tLoss:\t%.3f' % total_loss)
     print(f'\tAverage Loss per epoch:\t{total_loss/len(slices):.3f}')
     if wandb is not None:
@@ -168,7 +169,7 @@ def train_test(model, train_data, test_data, wandb=None):
             targets = trans_to_cuda(torch.Tensor(targets).long())
             valid_loss = model.loss_function(scores, targets - 1) 
             total_valid_loss += valid_loss
-            sub_scores = scores.topk(20)[1]
+            sub_scores = scores.topk(recall_mrr_k)[1]
             sub_scores = trans_to_cpu(sub_scores).detach().numpy()
             targets = trans_to_cpu(targets).detach().numpy()
             for score, target, mask in zip(sub_scores, targets, test_data.mask):
@@ -181,6 +182,29 @@ def train_test(model, train_data, test_data, wandb=None):
         mrr = np.mean(mrr) * 100
         if wandb is not None:
             wandb.log({"avg_valid_loss_per_epoch": total_valid_loss/len(slices)})
-            wandb.log({"Recall@20": hit})
-            wandb.log({"MMR@20": mrr})
+            wandb.log({f"Validation Recall@{recall_mrr_k}": hit})
+            wandb.log({f"Validation MMR@{recall_mrr_k}": mrr})
     return hit, mrr
+
+def evaluation_on_testing_set(model, test_data, recall_mrr_k=20):
+    model.eval()
+    hit, mrr = [], []
+    slices = test_data.generate_batch(model.batch_size)
+    with torch.no_grad():
+        for i in slices:
+            targets, scores = forward(model, i, test_data)
+            targets = trans_to_cuda(torch.Tensor(targets).long())
+
+            sub_scores = scores.topk(recall_mrr_k)[1]
+            sub_scores = trans_to_cpu(sub_scores).detach().numpy()
+            targets = trans_to_cpu(targets).detach().numpy()
+            for score, target, mask in zip(sub_scores, targets, test_data.mask):
+                hit.append(np.isin(target - 1, score))
+                if len(np.where(score == target - 1)[0]) == 0:
+                    mrr.append(0)
+                else:
+                    mrr.append(1 / (np.where(score == target - 1)[0][0] + 1))
+        hit = np.mean(hit) * 100
+        mrr = np.mean(mrr) * 100
+    return hit, mrr
+    
