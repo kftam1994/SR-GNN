@@ -162,24 +162,25 @@ def train_test(model, train_data, test_data, wandb=None):
     hit, mrr = [], []
     total_valid_loss = 0.0
     slices = test_data.generate_batch(model.batch_size)
-    for i in slices:
-        targets, scores = forward(model, i, test_data)
-        targets = trans_to_cuda(torch.Tensor(targets).long())
-        valid_loss = model.loss_function(scores, targets - 1) 
-        total_valid_loss += valid_loss
-        sub_scores = scores.topk(20)[1]
-        sub_scores = trans_to_cpu(sub_scores).detach().numpy()
-        targets = trans_to_cpu(targets).detach().numpy()
-        for score, target, mask in zip(sub_scores, targets, test_data.mask):
-            hit.append(np.isin(target - 1, score))
-            if len(np.where(score == target - 1)[0]) == 0:
-                mrr.append(0)
-            else:
-                mrr.append(1 / (np.where(score == target - 1)[0][0] + 1))
-    hit = np.mean(hit) * 100
-    mrr = np.mean(mrr) * 100
-    if wandb is not None:
-        wandb.log({"avg_valid_loss_per_epoch": total_valid_loss/len(slices)})
-        wandb.log({"Recall@20": hit})
-        wandb.log({"MMR@20": mrr})
+    with torch.no_grad():
+        for i in slices:
+            targets, scores = forward(model, i, test_data)
+            targets = trans_to_cuda(torch.Tensor(targets).long())
+            valid_loss = model.loss_function(scores, targets - 1) 
+            total_valid_loss += valid_loss
+            sub_scores = scores.topk(20)[1]
+            sub_scores = trans_to_cpu(sub_scores).detach().numpy()
+            targets = trans_to_cpu(targets).detach().numpy()
+            for score, target, mask in zip(sub_scores, targets, test_data.mask):
+                hit.append(np.isin(target - 1, score))
+                if len(np.where(score == target - 1)[0]) == 0:
+                    mrr.append(0)
+                else:
+                    mrr.append(1 / (np.where(score == target - 1)[0][0] + 1))
+        hit = np.mean(hit) * 100
+        mrr = np.mean(mrr) * 100
+        if wandb is not None:
+            wandb.log({"avg_valid_loss_per_epoch": total_valid_loss/len(slices)})
+            wandb.log({"Recall@20": hit})
+            wandb.log({"MMR@20": mrr})
     return hit, mrr
