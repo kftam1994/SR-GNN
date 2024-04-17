@@ -140,6 +140,7 @@ def train_test(model, train_data, test_data, wandb=None, recall_mrr_k=20):
     print('start training: ', datetime.datetime.now())
     model.train()
     total_loss = 0.0
+    metrics = {}
     slices = train_data.generate_batch(model.batch_size)
     for i, j in zip(slices, np.arange(len(slices))):
         model.optimizer.zero_grad()
@@ -149,16 +150,27 @@ def train_test(model, train_data, test_data, wandb=None, recall_mrr_k=20):
         loss.backward()
         model.optimizer.step()
         if wandb is not None:
-            wandb.log({"train_loss_per_batch": loss.item()})
+            metrics['lr'] = model.scheduler.get_last_lr()[0]
+            metrics['train_loss_per_batch'] = loss.item()
         total_loss += loss
         if j % int(len(slices) / 5 + 1) == 0:
-            print('[%d/%d] Loss: %.4f' % (j, len(slices), loss.item()))
+            avg_valid_loss, hit, mrr = evaluation(model, test_data, wandb=wandb, recall_mrr_k=recall_mrr_k)
+            print('[%d/%d] Train Loss: %.4f Valid Loss: %.4f' % (j, len(slices), loss.item(), avg_valid_loss))
+            metrics['avg_valid_loss_per_batch'] = avg_valid_loss
+            metrics[f"Validation Recall@{recall_mrr_k} per batch"] = hit
+            metrics[f"Validation MMR@{recall_mrr_k} per batch"] = mrr
+        if wandb is not None:
+            wandb.log(metrics)
+
     model.scheduler.step()
     print('\tLoss:\t%.3f' % total_loss)
     print(f'\tAverage Loss per epoch:\t{total_loss/len(slices):.3f}')
-    if wandb is not None:
-        wandb.log({"avg_train_loss_per_epoch": total_loss/len(slices)})
     print('start predicting: ', datetime.datetime.now())
+    _ , hit, mrr = evaluation(model, test_data, wandb=wandb, recall_mrr_k=recall_mrr_k)
+    return hit, mrr
+
+
+def evaluation(model, test_data, wandb=None, recall_mrr_k=20):
     model.eval()
     hit, mrr = [], []
     total_valid_loss = 0.0
@@ -180,31 +192,5 @@ def train_test(model, train_data, test_data, wandb=None, recall_mrr_k=20):
                     mrr.append(1 / (np.where(score == target - 1)[0][0] + 1))
         hit = np.mean(hit) * 100
         mrr = np.mean(mrr) * 100
-        if wandb is not None:
-            wandb.log({"avg_valid_loss_per_epoch": total_valid_loss/len(slices)})
-            wandb.log({f"Validation Recall@{recall_mrr_k}": hit})
-            wandb.log({f"Validation MMR@{recall_mrr_k}": mrr})
-    return hit, mrr
-
-def evaluation_on_testing_set(model, test_data, recall_mrr_k=20):
-    model.eval()
-    hit, mrr = [], []
-    slices = test_data.generate_batch(model.batch_size)
-    with torch.no_grad():
-        for i in slices:
-            targets, scores = forward(model, i, test_data)
-            targets = trans_to_cuda(torch.Tensor(targets).long())
-
-            sub_scores = scores.topk(recall_mrr_k)[1]
-            sub_scores = trans_to_cpu(sub_scores).detach().numpy()
-            targets = trans_to_cpu(targets).detach().numpy()
-            for score, target, mask in zip(sub_scores, targets, test_data.mask):
-                hit.append(np.isin(target - 1, score))
-                if len(np.where(score == target - 1)[0]) == 0:
-                    mrr.append(0)
-                else:
-                    mrr.append(1 / (np.where(score == target - 1)[0][0] + 1))
-        hit = np.mean(hit) * 100
-        mrr = np.mean(mrr) * 100
-    return hit, mrr
+    return total_valid_loss/len(slices), hit, mrr
     

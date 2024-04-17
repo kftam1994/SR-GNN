@@ -30,8 +30,6 @@ def build_graph(train_data):
                 graph.add_edge(j, i, weight=graph.get_edge_data(j, i)['weight'] / sum)
     return graph
 
-import itertools
-
 def stack_padding(it,row_length):
     '''
     https://stackoverflow.com/questions/53051560/stacking-numpy-arrays-of-different-length-using-padding
