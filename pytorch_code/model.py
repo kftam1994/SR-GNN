@@ -54,21 +54,40 @@ class GNN(Module):
 
 
 class SessionGraph(Module):
-    def __init__(self, opt, n_node, product_data):
+    def __init__(self, opt, n_node, product_data, include_add_node_embedding=True, frozen_add_node_embedding=True, no_original_node_embedding=False):
         super(SessionGraph, self).__init__()
         self.hidden_size = opt.hiddenSize
         self.n_node = n_node
         self.batch_size = opt.batchSize
         self.nonhybrid = opt.nonhybrid
-        self.embedding = nn.Embedding(self.n_node, self.hidden_size)
+        
+        self.no_original_node_embedding = no_original_node_embedding
         self.embedding_hidden_size_requires_grad = self.hidden_size
-
-        assert self.n_node==product_data.get_shape()[0]+1
-        add_embed_size = product_data.get_shape()[1]
-        self.add_node_embedding = nn.Embedding(self.n_node, add_embed_size) # https://discuss.pytorch.org/t/can-we-use-pre-trained-word-embeddings-for-weight-initialization-in-nn-embedding/1222/3
-        self.add_node_embedding.weight = nn.Parameter(torch.concatenate((trans_to_cuda(torch.zeros((1,add_embed_size))),product_data.get_product_features())))
-        self.add_node_embedding.weight.requires_grad = False
-        self.hidden_size += add_embed_size
+        self.include_add_node_embedding = include_add_node_embedding
+        self.frozen_add_node_embedding = frozen_add_node_embedding
+        
+        if not self.no_original_node_embedding:
+            self.embedding = nn.Embedding(self.n_node, self.hidden_size)
+        else:
+            assert self.include_add_node_embedding==True
+            self.hidden_size = 0
+            self.frozen_add_node_embedding = False
+            
+        if self.include_add_node_embedding:
+            assert self.n_node==product_data.get_shape()[0]+1
+            add_embed_size = product_data.get_shape()[1]
+            self.add_node_embedding = nn.Embedding(self.n_node, add_embed_size) # https://discuss.pytorch.org/t/can-we-use-pre-trained-word-embeddings-for-weight-initialization-in-nn-embedding/1222/3
+            self.add_node_embedding.weight = nn.Parameter(torch.concatenate((trans_to_cuda(torch.zeros((1,add_embed_size))),product_data.get_product_features())))
+            self.hidden_size += add_embed_size
+            if self.frozen_add_node_embedding:
+                self.add_node_embedding.weight.requires_grad = False
+            else:
+                self.add_node_embedding.weight.requires_grad = True
+                self.embedding_hidden_size_requires_grad = self.hidden_size
+            
+            if self.no_original_node_embedding:
+                self.embedding = self.add_node_embedding
+                del self.add_node_embedding
         
         self.gnn = GNN(self.hidden_size,step=opt.step)
         self.linear_one = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
@@ -96,15 +115,21 @@ class SessionGraph(Module):
         a = torch.sum(alpha * hidden * mask.view(mask.shape[0], -1, 1).float(), 1)
         if not self.nonhybrid:
             a = self.linear_transform(torch.cat([a, ht], 1))
-        # b = self.embedding.weight[1:]  # n_nodes x latent_size
-        b = torch.cat((self.embedding.weight[1:],self.add_node_embedding.weight[1:]),1) # n_nodes x (latent_size+add node embedding size)
+
+        if self.include_add_node_embedding and not self.no_original_node_embedding:
+            b = torch.cat((self.embedding.weight[1:],self.add_node_embedding.weight[1:]),1) # n_nodes x (latent_size+add node embedding size)
+        elif self.no_original_node_embedding:
+            b = self.embedding.weight[1:]  # n_nodes x add node embedding size
+        else:
+            b = self.embedding.weight[1:]  # n_nodes x latent_size
         scores = torch.matmul(a, b.transpose(1, 0))
         return scores
 
     def forward(self, inputs, A):
         hidden = self.embedding(inputs)
-        add_hidden = self.add_node_embedding(inputs)
-        hidden = torch.cat((hidden,add_hidden), 2)
+        if self.include_add_node_embedding and not self.no_original_node_embedding:
+            add_hidden = self.add_node_embedding(inputs)
+            hidden = torch.cat((hidden,add_hidden), 2)
         hidden = self.gnn(A, hidden)
         return hidden
 
@@ -136,7 +161,7 @@ def forward(model, i, data):
     seq_hidden = hidden[torch.arange(hidden.shape[0]).unsqueeze(-1), alias_inputs] # https://stackoverflow.com/questions/55628014/indexing-a-3d-tensor-using-a-2d-tensor
     return targets, model.compute_scores(seq_hidden, mask)
 
-def train_test(model, train_data, test_data, wandb=None, recall_mrr_k=20):
+def train_test(epoch, model, train_data, test_data, wandb=None, recall_mrr_k=20):
     print('start training: ', datetime.datetime.now())
     model.train()
     total_loss = 0.0
@@ -160,6 +185,7 @@ def train_test(model, train_data, test_data, wandb=None, recall_mrr_k=20):
             metrics[f"Validation Recall@{recall_mrr_k} per batch"] = hit
             metrics[f"Validation MMR@{recall_mrr_k} per batch"] = mrr
         if wandb is not None:
+            metrics["training_step"]=epoch*len(slices)+j
             wandb.log(metrics)
 
     model.scheduler.step()
