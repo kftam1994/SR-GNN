@@ -33,9 +33,6 @@ PROJECT_NAME = "SR-GNN_AmazonM2_GridSearch_trainable_nodeembed_trainable_addembe
 def record_training_stats(opt,model):
     import wandb
     import os
-    os.environ['HTTP_PROXY'] = 'http://proxy01.intra.hkma.gov.hk:8080'
-    os.environ['HTTPS_PROXY'] = 'http://proxy01.intra.hkma.gov.hk:8080'
-    os.environ['CURL_CA_BUNDLE'] = '' # https://stackoverflow.com/questions/75110981/sslerror-httpsconnectionpoolhost-huggingface-co-port-443-max-retries-exce
 
     wandb.login()
     run = wandb.init(
@@ -185,7 +182,7 @@ if __name__ == '__main__':
     # lr_dcs =  [0.9] # [0.5, 0.9] #
     # l2s =  [0.00001] # [1e-3, 1e-4, 1e-5] #
     # hiddenSizes =  [256] #[100,256,512,1024,2048] #
-    # steps = [1,2,3,5,10]
+    # steps = [1]
     # all_params_to_search = [lrs,lr_dcs,l2s,hiddenSizes,steps]
     # list_params_to_search = list(itertools.product(*all_params_to_search))
     # print(len(list_params_to_search))
@@ -208,7 +205,7 @@ if __name__ == '__main__':
     #     opt.step=step
     #     opt.validation=True
     #     opt.evaluation_only = False
-    #     opt.record_wandb=True
+    #     opt.record_wandb=False
     #     main(opt)
     #     # Evaluation
     #     list_of_model_files = glob.glob('../saved_model/*.pt')
@@ -221,5 +218,5 @@ if __name__ == '__main__':
     #     # Train again
     #     opt.validation=True
     #     opt.evaluation_only = False
-    #     opt.record_wandb=True
+    #     opt.record_wandb=False
     main(opt)
