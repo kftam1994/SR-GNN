@@ -100,7 +100,7 @@ def main(opt):
         print('-----------------------Evaluation----------------------')
         model.load_state_dict(torch.load(f'../saved_model/{opt.model_name}.pt'))
         model.eval()
-        _,hit, mrr = evaluation(model, test_data, recall_mrr_k=opt.recall_mrr_k)
+        _,hit, mrr = evaluation(model, test_data, recall_mrr_k=opt.recall_mrr_k, save_predictions=True,save_prefix=PROJECT_NAME[-6:])
         print('Evaluation\tRecall@%d:\t%.4f\tMMR@%d:\t%.4f'% (opt.recall_mrr_k, hit, opt.recall_mrr_k, mrr))
         with open("../saved_model/evaluate_results.txt", "a") as f:
             f.write(f'{opt.model_name}:\tRecall@{opt.recall_mrr_k}:\t{hit:.4f}\tMMR@{opt.recall_mrr_k}:\t{mrr:.4f}\n')
@@ -180,7 +180,7 @@ if __name__ == '__main__':
     # from pathlib import Path
     # lrs =  [0.001] # [1e-2, 1e-3, 5e-3,5e-4, 1e-4, 1e-5] #
     # lr_dcs =  [0.9] # [0.5, 0.9] #
-    # l2s =  [0.00001] # [1e-3, 1e-4, 1e-5] #
+    # l2s =  [1e-5] # [1e-3, 1e-4, 1e-5] #
     # hiddenSizes =  [256] #[100,256,512,1024,2048] #
     # steps = [1]
     # all_params_to_search = [lrs,lr_dcs,l2s,hiddenSizes,steps]

@@ -196,11 +196,12 @@ def train_test(epoch, model, train_data, test_data, wandb=None, recall_mrr_k=20)
     return hit, mrr
 
 
-def evaluation(model, test_data, wandb=None, recall_mrr_k=20):
+def evaluation(model, test_data, wandb=None, recall_mrr_k=20, save_predictions=False,save_prefix=''):
     model.eval()
     hit, mrr = [], []
     total_valid_loss = 0.0
     slices = test_data.generate_batch(model.batch_size)
+    slices_cnt = 1
     with torch.no_grad():
         for i in slices:
             targets, scores = forward(model, i, test_data)
@@ -216,6 +217,12 @@ def evaluation(model, test_data, wandb=None, recall_mrr_k=20):
                     mrr.append(0)
                 else:
                     mrr.append(1 / (np.where(score == target - 1)[0][0] + 1))
+            if save_predictions:
+                import pickle
+                pickle.dump(targets,open(f'../saved_model/{save_prefix}_targets_slice_{slices_cnt}.pkl','wb'))
+                pickle.dump(scores.cpu().detach().numpy(),open(f'../saved_model/{save_prefix}_predicts_slice_{slices_cnt}.pkl','wb'))
+                slices_cnt+=1
+                
         hit = np.mean(hit) * 100
         mrr = np.mean(mrr) * 100
     return total_valid_loss/len(slices), hit, mrr
